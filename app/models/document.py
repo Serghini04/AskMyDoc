@@ -37,5 +37,4 @@ class Chunk(Base):
     # Relationship back to the parent Document
     document: Mapped["Document"] = relationship("Document", back_populates="chunks")
 
-# Explicitly indexing the foreign key to prevent full table scans
 Index('idx_chunk_document_id', Chunk.document_id)
