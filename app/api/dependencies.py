@@ -11,3 +11,10 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+        
+        
+def get_embedding_service(request: Request) -> BaseEmbeddingService:
+    """
+    Retrieves the singleton embedding service from the global app state.
+    """
+    return request.app.state.embeding_service

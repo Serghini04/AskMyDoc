@@ -9,10 +9,11 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_db
+from app.api.dependencies import get_db, get_embedding_service
 from app.schemas.document import DocumentResponse
 from app.repositories.document_repo import DocumentRepository
-from app.models.document import Document # Required for db.query(Document)
+from app.models.document import Document
+from app.services.embeddings import BaseEmbeddingService
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -20,7 +21,7 @@ UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 @router.post("/", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
-async def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db), embedding_service: BaseEmbeddingService = Depends(get_embedding_service)):
     _, ext = os.path.splitext(file.filename)
     ext = ext.lower()
     

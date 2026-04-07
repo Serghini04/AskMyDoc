@@ -1,12 +1,43 @@
 version: '3.8'
 
 services:
+  api:
+    build: .
+    container_name: rag_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Tell HuggingFace exactly where to save/load the 2.2GB model
+      - HF_HOME=/root/.cache/huggingface
+    volumes:
+      # Map your local code so you don't have to rebuild the image on every code change
+      - .:/app
+      # The permanent cache for the AI model
+      - huggingface_cache:/root/.cache/huggingface
+    depends_on:
+      # Wait for the DB to actually be ready, not just started
+      postgres:
+        condition: service_healthy 
+      qdrant:
+        condition: service_started
+    deploy:
+      resources:
+        reservations:
+          devices:
+            # SENIOR MOVE: This block unlocks your GTX 1650 inside the container!
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
   postgres:
     image: postgres:15-alpine 
     container_name: rag_postgres
     restart: unless-stopped
     env_file:
-      - .env  # Injects your .env variables directly into the container
+      - .env 
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -22,11 +53,12 @@ services:
     container_name: rag_qdrant
     restart: unless-stopped
     ports:
-      - "${QDRANT_PORT:-6333}:6333" # REST API and Web UI
-      - "6334:6334"                 # gRPC port (faster for large scale data)
+      - "${QDRANT_PORT:-6333}:6333" 
+      - "6334:6334"                 
     volumes:
       - qdrant_data:/qdrant/storage
 
 volumes:
   postgres_data:
   qdrant_data:
+  huggingface_cache: # Declare the new AI cache volume
