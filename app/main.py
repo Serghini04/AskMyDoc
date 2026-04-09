@@ -1,12 +1,14 @@
+from contextlib import asynccontextmanager
+
+import torch
 from fastapi import FastAPI
 
 from app.api.routers import documents
-from app.services.embeddings import BGEM3EmbeddingService
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Initializing global AI models...")
-    app.state.embedding_service = BGEM3EmbeddingService()
+    # Lazy-load embedding models from dependencies to keep startup fast and reliable.
+    app.state.embedding_service = None
     
     yield  # <-- This is where FastAPI actually boots up and accepts web traffic!
     
@@ -19,7 +21,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Enterprise RAG API",
     description="API for ingesting documents and querying them via LLMs.",
-    lifespan=lifespan
+    lifespan=lifespan,
     version="1.0.0"
 )
 

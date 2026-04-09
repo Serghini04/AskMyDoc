@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # Vector DB Config
     QDRANT_HOST: str
     QDRANT_PORT: int
+    QDRANT_URL: str
 
     # AI Config
     OPENAI_API_KEY: SecretStr 

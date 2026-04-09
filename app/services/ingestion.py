@@ -1,8 +1,20 @@
-import os
+from __future__ import annotations
+
 import re
+import logging
+from uuid import UUID
+
 import fitz  # PyMuPDF
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from .embedding_service import BGEM3EmbeddingService
+from sqlalchemy.orm import Session
+
+from app.database import SessionLocal
+from app.models.document import Document
+from app.repositories.chunk_repo import ChunkRepository
+from app.services.embeddings import BaseEmbeddingService, BGEM3EmbeddingService
+from app.services.qdrant import QdrantService
+
+qdrant_service = QdrantService()
 
 def extract_text(file_path: str, ext: str) -> str:
     """
@@ -18,10 +30,10 @@ def extract_text(file_path: str, ext: str) -> str:
             raw_text += page.get_text()
         doc.close()
     elif ext == ".txt":
-        with open(file_path, "r",encoding="uft-8") as f :
+        with open(file_path, "r", encoding="utf-8") as f:
             raw_text = f.read()
     else:
-        raise ValueError(f"Usupported extension for extraction: {ext}")
+        raise ValueError(f"Unsupported extension for extraction: {ext}")
     return raw_text
 
 def clean_text(text: str) -> str:
@@ -55,15 +67,13 @@ def chunk_document_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 
     chunks = splitter.split_text(text)
     return chunks
 
-embedding_service = BGEM3EmbeddingService()
-
 def process_document(
     db: Session, 
-    doc_id: UUID, 
+    doc_id: UUID | str,
     file_path: str, 
     ext: str, 
-    embedding_service=embedding_service
-):
+    embedding_service: BaseEmbeddingService,
+) -> int:
     """
     The master pipeline: Extracts, Cleans, Chunks, Embeds, and Saves.
     Notice how we INJECT the embedding_service here! 
@@ -74,13 +84,58 @@ def process_document(
     
     chunks = chunk_document_text(clean_str, chunk_size=1000, chunk_overlap=200)
     
-    for position, chunk_text in enumerate(chunks):
-        vector = embedding_service.embed_text(chunk_text)
+    saved_chunks = ChunkRepository.create_bulk(
+        db=db,
+        document_id=doc_id,
+        chunks_data=chunks,
+    )
+    
+    qdrant_payloads = []
         
-        # B. Save the text metadata to PostgreSQL (We will write this repo next)
-        # chunk_record = ChunkRepository.create(...)
-        
-        # C. Save the Vector to Qdrant (We will write this connection next)
-        # qdrant_client.upsert(...)
+    for chunk in saved_chunks:
+        # Generate the 1024-dimensional BGE-M3 vector
+        vector = embedding_service.embed_text(chunk.content)
+        qdrant_payloads.append({
+            "id": str(chunk.id),
+            "vector": vector,
+            "payload": {
+                "document_id": str(doc_id),
+                "chunk_index": chunk.chunk_index
+            }
+        })
+    
+    qdrant_service.upsert_points(qdrant_payloads)
         
     return len(chunks)
+
+def process_document_background(
+    doc_id: UUID | str,
+    file_path: str,
+    ext: str,
+    embedding_service: BaseEmbeddingService | None = None,
+):
+    """
+    This is the function we actually pass to FastAPI BackgroundTasks.
+    It creates a completely fresh database session that won't close permaturely.
+    """
+    with SessionLocal() as db:
+        try:
+            if embedding_service is None:
+                embedding_service = BGEM3EmbeddingService()
+
+            print(f"Starting background processsing for document {doc_id} ...")
+            chunks_created = process_document(db, doc_id, file_path, ext, embedding_service)
+            
+            # Update the Document status in the DB:
+            doc = db.query(Document).filter(Document.id == doc_id).first()
+            if doc:
+                doc.status = "COMPLETED"
+                db.commit()
+            
+            print(f"Successfully processed and embedded {chunks_created} chunks!")
+        except Exception as e:
+            logging.error(f"Failed to process document {doc_id}: {e}")
+            doc = db.query(Document).filter(Document.id == doc_id).first()
+            if doc:
+                doc.status = "FAILED"
+            db.commit()

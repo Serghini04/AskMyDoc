@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   api:
     build: .
@@ -12,6 +10,9 @@ services:
     environment:
       # Tell HuggingFace exactly where to save/load the 2.2GB model
       - HF_HOME=/root/.cache/huggingface
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     volumes:
       # Map your local code so you don't have to rebuild the image on every code change
       - .:/app
