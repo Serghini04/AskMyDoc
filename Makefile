@@ -12,7 +12,7 @@ UVICORN := $(VENV_DIR)/bin/uvicorn
 ALEMBIC := $(VENV_DIR)/bin/alembic
 COMPOSE := docker compose
 
-.PHONY: help check-venv install up down restart logs ps run migrate makemigration downgrade
+.PHONY: help check-venv install up down restart logs ps run migrate makemigration downgrade test test-verbose
 
 help:
 	@echo "Available targets:"
@@ -23,6 +23,8 @@ help:
 	@echo "  make logs                         - Show Docker logs"
 	@echo "  make ps                           - Show container status"
 	@echo "  make run                          - Run FastAPI app (uvicorn)"
+	@echo "  make test                         - Run tests (quiet)"
+	@echo "  make test-verbose                 - Run tests (verbose)"
 	@echo "  make migrate                      - Apply DB migrations (upgrade head)"
 	@echo "  make makemigration m=\"message\"    - Create auto migration"
 	@echo "  make downgrade                    - Roll back one migration"
@@ -49,6 +51,12 @@ ps:
 
 run: check-venv
 	$(UVICORN) app.main:app --host 0.0.0.0 --port $${PORT:-8000} --reload
+
+test: check-venv
+	$(PYTHON) -m pytest -q
+
+test-verbose: check-venv
+	$(PYTHON) -m pytest -vv
 
 migrate: check-venv
 	$(ALEMBIC) upgrade head

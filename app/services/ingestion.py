@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import logging
 from uuid import UUID
+from functools import lru_cache
 
 import fitz  # PyMuPDF
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -14,7 +15,10 @@ from app.repositories.chunk_repo import ChunkRepository
 from app.services.embeddings import BaseEmbeddingService, BGEM3EmbeddingService
 from app.services.qdrant import QdrantService
 
-qdrant_service = QdrantService()
+
+@lru_cache(maxsize=1)
+def get_qdrant_service() -> QdrantService:
+    return QdrantService()
 
 def extract_text(file_path: str, ext: str) -> str:
     """
@@ -104,7 +108,7 @@ def process_document(
             }
         })
     
-    qdrant_service.upsert_points(qdrant_payloads)
+    get_qdrant_service().upsert_points(qdrant_payloads)
         
     return len(chunks)
 
