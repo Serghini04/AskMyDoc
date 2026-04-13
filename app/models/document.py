@@ -1,7 +1,9 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, Text, ForeignKey, DateTime, Integer, Index
+from sqlalchemy import Column, String, Text, ForeignKey, DateTime, Integer, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import ForeignKey
+from sqlalchemy.orm import relationship
 from app.database import Base
 
 class Document(Base):
@@ -16,7 +18,9 @@ class Document(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
-    # cascade="all, delete-orphan" means if we delete the document, Postgres automatically deletes its chunks.
+    session_id = Column(String, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False)
+    
+    session = relationship("ChatSession", back_populates="documents")
     chunks: Mapped[list["Chunk"]] = relationship("Chunk", back_populates="document", cascade="all, delete-orphan")
 
 
@@ -34,7 +38,6 @@ class Chunk(Base):
     
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    # Relationship back to the parent Document
     document: Mapped["Document"] = relationship("Document", back_populates="chunks")
 
 Index('idx_chunk_document_id', Chunk.document_id)
