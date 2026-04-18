@@ -182,4 +182,12 @@ Upload any document. Ask any question. Get sourced answers in under 500ms.
 
 Built on a distributed RAG architecture with hybrid vector + full-text search, multi-tenant data isolation, and a cost-optimized AI pipeline.
 
+
+(next project :
+Input: A user asks to find leads on LinkedIn.
+
+Logic: The agent uses an API tool to find leads, realizes the API is down, switches to a backup web-scraper tool, cleans the data into JSON, and saves it to a CRM.
+
+Security: It refuses to scrape any data marked as "Private" and requires human approval before sending an email.)
+
 `FastAPI` · `Qdrant` · `PostgreSQL` · `Redis` · `BGE-M3` · `Docker` · `AWS`

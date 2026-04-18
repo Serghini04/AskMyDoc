@@ -59,6 +59,19 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  adminer:
+    image: adminer:latest
+    container_name: rag_adminer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Preselect the postgres service as the default server in login form.
+      - ADMINER_DEFAULT_SERVER=postgres
+    ports:
+      - "${ADMINER_PORT:-8080}:8080"
+
 volumes:
   postgres_data:
   qdrant_data:

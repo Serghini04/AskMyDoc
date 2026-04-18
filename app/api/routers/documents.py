@@ -5,7 +5,7 @@ import mimetypes
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,7 @@ from app.api.dependencies import get_db
 from app.schemas.document import DocumentResponse
 from app.repositories.document_repo import DocumentRepository
 from app.models.document import Document
+from app.models.chat import ChatSession
 from app.services.ingestion import process_document_background
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
@@ -23,6 +24,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 @router.post("/", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
     background_tasks: BackgroundTasks,
+    session_id: UUID = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
@@ -46,7 +48,18 @@ async def upload_document(
             detail=f"File already exists with ID: {existing_doc.id}"
         )
     
-    new_doc = DocumentRepository.create(db=db, filename=file.filename, file_hash=file_hash)
+    try:
+        new_doc = DocumentRepository.create(
+            db=db,
+            filename=file.filename,
+            file_hash=file_hash,
+            session_id=session_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
     safe_filename = f"{new_doc.id}{ext}"
     file_path = os.path.join(UPLOAD_DIR, safe_filename)

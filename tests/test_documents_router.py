@@ -1,10 +1,22 @@
 import uuid
 
 from app.api.routers import documents
+from app.models.chat import ChatSession
 
 
-def test_upload_list_get_download_delete_full_flow(api_client, monkeypatch):
+def _create_session_id(session_maker) -> str:
+    db = session_maker()
+    session = ChatSession(title="test session")
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    db.close()
+    return str(session.id)
+
+
+def test_upload_list_get_download_delete_full_flow(api_client, monkeypatch, session_maker):
     calls: list[dict] = []
+    session_id = _create_session_id(session_maker)
 
     def fake_background(doc_id, file_path, ext):
         calls.append(
@@ -19,6 +31,7 @@ def test_upload_list_get_download_delete_full_flow(api_client, monkeypatch):
 
     response = api_client.post(
         "/api/v1/documents/",
+        data={"session_id": session_id},
         files={"file": ("contract.txt", b"hello from test", "text/plain")},
     )
     assert response.status_code == 201
@@ -51,21 +64,25 @@ def test_upload_list_get_download_delete_full_flow(api_client, monkeypatch):
     assert missing_response.status_code == 404
 
 
-def test_upload_rejects_duplicate_by_hash(api_client, monkeypatch):
+def test_upload_rejects_duplicate_by_hash(api_client, monkeypatch, session_maker):
     monkeypatch.setattr(documents, "process_document_background", lambda *args, **kwargs: None)
+    session_id = _create_session_id(session_maker)
 
     file_payload = {"file": ("same.txt", b"same content", "text/plain")}
+    form_data = {"session_id": session_id}
 
-    first = api_client.post("/api/v1/documents/", files=file_payload)
+    first = api_client.post("/api/v1/documents/", data=form_data, files=file_payload)
     assert first.status_code == 201
 
-    second = api_client.post("/api/v1/documents/", files=file_payload)
+    second = api_client.post("/api/v1/documents/", data=form_data, files=file_payload)
     assert second.status_code == 409
 
 
-def test_upload_rejects_unsupported_extension(api_client):
+def test_upload_rejects_unsupported_extension(api_client, session_maker):
+    session_id = _create_session_id(session_maker)
     response = api_client.post(
         "/api/v1/documents/",
+        data={"session_id": session_id},
         files={"file": ("malware.exe", b"MZ", "application/octet-stream")},
     )
     assert response.status_code == 415

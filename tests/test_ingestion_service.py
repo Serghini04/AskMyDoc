@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from app.models.chat import ChatSession
 from app.repositories.document_repo import DocumentRepository
 from app.models.document import Chunk, Document
 from app.services import ingestion
@@ -10,11 +11,20 @@ class DummyEmbeddingService:
         return [float(len(text)), 1.0, 2.0]
 
 
+def _create_session(db_session) -> ChatSession:
+    session = ChatSession(title="ingestion test")
+    db_session.add(session)
+    db_session.flush()
+    return session
+
+
 def test_process_document_persists_chunks_and_upserts(db_session, monkeypatch):
+    chat_session = _create_session(db_session)
     doc = DocumentRepository.create(
         db=db_session,
         filename="doc.txt",
         file_hash="f" * 64,
+        session_id=chat_session.id,
     )
 
     monkeypatch.setattr(ingestion, "extract_text", lambda *_: "raw")
@@ -63,10 +73,12 @@ def test_process_document_background_updates_status_success_and_failure(
     monkeypatch.setattr(ingestion, "SessionLocal", session_maker)
 
     success_db = session_maker()
+    success_session = _create_session(success_db)
     success_doc = DocumentRepository.create(
         db=success_db,
         filename="ok.txt",
         file_hash="a" * 64,
+        session_id=success_session.id,
     )
     success_db.close()
 
@@ -86,10 +98,12 @@ def test_process_document_background_updates_status_success_and_failure(
     check_success.close()
 
     failure_db = session_maker()
+    failure_session = _create_session(failure_db)
     failure_doc = DocumentRepository.create(
         db=failure_db,
         filename="bad.txt",
         file_hash="b" * 64,
+        session_id=failure_session.id,
     )
     failure_db.close()
 
