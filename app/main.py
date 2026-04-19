@@ -26,6 +26,7 @@ app = FastAPI(
 )
 
 app.include_router(documents.router, prefix="/api/v1")
+app.include_router(chat.router, prefix="/api/v1")
 
 @app.get("/health")
 def health_check():

@@ -48,4 +48,27 @@ class QdrantService:
         )
         
         logging.info(f"Successfully upserted {len(points)} vectors to Qdrant.")
-        
+    
+    def search_similar_chunks(self, query_vector: list[float], session_id: str, limit: int = 5):
+        """
+        Searches for the most similar vectors, filtered directly by session_id.
+        This seamlessly handles 1 file or 100 files inside the same chat session!
+        """
+        doc_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="session_id",
+                    match=models.MatchValue(value=session_id)
+                )
+            ]
+        )
+
+        search_results = self.client.search(
+            collection_name=self.collection_name,
+            query_vector=query_vector,
+            query_filter=doc_filter,
+            limit=limit
+        )
+
+        logging.info(f"Retrieved {len(search_results)} chunks from Qdrant.")
+        return search_results

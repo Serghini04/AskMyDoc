@@ -4,6 +4,7 @@ from sqlalchemy import String, Text, ForeignKey, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.document import Document
 
 class ChatSession(Base):
     __tablename__ = "chat_sessions"

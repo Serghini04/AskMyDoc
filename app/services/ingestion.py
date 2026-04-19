@@ -82,10 +82,12 @@ def process_document(
     The master pipeline: Extracts, Cleans, Chunks, Embeds, and Saves.
     Notice how we INJECT the embedding_service here! 
     """
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if not doc:
+        raise ValueError(f"Document {doc_id} not found in database.")
+    
     raw_text = extract_text(file_path, ext)
-    
     clean_str = clean_text(raw_text)
-    
     chunks = chunk_document_text(clean_str, chunk_size=1000, chunk_overlap=200)
     
     saved_chunks = ChunkRepository.create_bulk(
@@ -104,6 +106,7 @@ def process_document(
             "vector": vector,
             "payload": {
                 "document_id": str(doc_id),
+                "session_id": str(doc.session_id),
                 "chunk_index": chunk.chunk_index
             }
         })

@@ -9,4 +9,5 @@ class DocumentResponse(DocumentBase):
     id: UUID
     file_hash: str
     status: str
+    session_id: UUID
     created_at: datetime
