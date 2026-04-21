@@ -32,25 +32,19 @@ class RetrievalService:
         
         if not search_results:
             return "No relevant documents found for this session."
-            
-        # extract the exact Chunk UUIDs returned by Qdrant
+
         chunk_ids = [result.id for result in search_results]
         
-        # fetch the actual text from PostgreSQL
         chunks = db.query(Chunk).filter(Chunk.id.in_(chunk_ids)).all()
         
-        # Postgres might return these out of order! 
-        # We need to map them back to Qdrant's relevance scoring order.
         chunk_map = {str(chunk.id): chunk.content for chunk in chunks}
         
         ordered_context = []
         for result in search_results:
             content = chunk_map.get(str(result.id))
             if content:
-                # Optional: You can append metadata here like [Doc ID: ...] if you want
                 ordered_context.append(content)
-                
-        # Join all the chunks together with a clean separator
+
         final_context_string = "\n\n---\n\n".join(ordered_context)
         
         return final_context_string
