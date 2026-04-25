@@ -1,5 +1,7 @@
 # AskMyDoc — AI Document Intelligence Platform
 
+> 🚧 **Status:** Work in progress. This project is actively being improved with production-focused features.
+
 ![AskMyDoc Banner](https://capsule-render.vercel.app/api?type=waving&height=220&color=0:0ea5e9,100:22c55e&text=AskMyDoc&fontAlign=50&fontAlignY=36&fontColor=ffffff&fontSize=56&desc=AI%20Document%20Intelligence%20Platform&descAlign=50&descAlignY=58)
 
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
