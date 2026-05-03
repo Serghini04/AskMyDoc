@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import torch
 from fastapi import FastAPI
 
-from app.api.routers import documents
+from app.api.routers import documents, chat
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

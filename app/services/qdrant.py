@@ -1,4 +1,5 @@
 import logging
+from functools import lru_cache
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from app.config import settings
@@ -72,3 +73,27 @@ class QdrantService:
 
         logging.info(f"Retrieved {len(search_results)} chunks from Qdrant.")
         return search_results
+
+    def delete_points_by_document(self, document_id: str) -> None:
+        """Delete all vectors for a document using its payload filter."""
+        doc_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="document_id",
+                    match=models.MatchValue(value=document_id)
+                )
+            ]
+        )
+
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.FilterSelector(filter=doc_filter),
+            wait=True
+        )
+
+        logging.info("Deleted vectors for document_id=%s", document_id)
+
+
+@lru_cache(maxsize=1)
+def get_qdrant_service() -> QdrantService:
+    return QdrantService()

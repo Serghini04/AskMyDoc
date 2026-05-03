@@ -2,9 +2,10 @@ import os
 import shutil
 import hashlib
 import mimetypes
+import logging
 from typing import List
 from uuid import UUID
-
+from app.services.qdrant import get_qdrant_service
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -123,8 +124,11 @@ async def delete_document(
     if os.path.exists(file_path):
         os.remove(file_path)
     
-    # 2. Delete the database record
-    # TODO: Later, we must also tell Qdrant to delete the vectors associated with this doc!
+    try:
+        get_qdrant_service().delete_points_by_document(str(doc.id))
+    except Exception as exc:
+        logging.warning("Failed to delete Qdrant vectors for document_id=%s: %s", doc.id, exc)
+
     db.delete(doc)
     db.commit()
     return None

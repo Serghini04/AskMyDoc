@@ -6,9 +6,22 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.api.dependencies import get_db
-from app.api.routers import documents
-from app.models.document import Base
+from app.api.dependencies import get_db, get_embedding_service
+from app.api.routers import documents, chat
+from app.database import Base
+from app.services.llm import get_llm_service
+from app.models import chat as chat_models  # noqa: F401
+from app.models import document as document_models  # noqa: F401
+
+
+class DummyEmbeddingService:
+    def embed_text(self, text: str) -> list[float]:
+        return [float(len(text)), 1.0, 2.0]
+
+
+class DummyLLMService:
+    def generate_answer(self, system_prompt: str, context: str, history, question: str) -> str:
+        return "test-answer"
 
 
 @pytest.fixture
@@ -46,6 +59,7 @@ def api_client(tmp_path, session_maker, monkeypatch) -> Generator[TestClient, No
 
     app = FastAPI()
     app.include_router(documents.router, prefix="/api/v1")
+    app.include_router(chat.router, prefix="/api/v1")
 
     def override_get_db() -> Generator[Session, None, None]:
         db = session_maker()
@@ -55,6 +69,8 @@ def api_client(tmp_path, session_maker, monkeypatch) -> Generator[TestClient, No
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_embedding_service] = lambda: DummyEmbeddingService()
+    app.dependency_overrides[get_llm_service] = lambda: DummyLLMService()
 
     with TestClient(app) as client:
         yield client

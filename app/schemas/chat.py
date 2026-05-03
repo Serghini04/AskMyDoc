@@ -1,11 +1,16 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from uuid import UUID
 from datetime import datetime
 from typing import List
 
 from app.schemas.document import DocumentResponse
 
-# 1. Child Schema defined FIRST
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
 class ChatMessageResponse(BaseModel):
     id: UUID
     session_id: UUID
@@ -17,13 +22,11 @@ class ChatMessageResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# 2. Parent Schema defined SECOND
 class ChatSessionResponse(BaseModel):
     id: UUID
     title: str
     created_at: datetime
-    # Use standard List with default empty lists
-    messages: List[ChatMessageResponse] = []
-    documents: List[DocumentResponse] = []
+    messages: List[ChatMessageResponse] = Field(default_factory=list)
+    documents: List[DocumentResponse] = Field(default_factory=list)
     
     model_config = ConfigDict(from_attributes=True)

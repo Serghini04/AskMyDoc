@@ -30,7 +30,7 @@ class ChatMessageRepository:
             role=role,
             content=content
         )
-        db.add()
+        db.add(new_message)
         db.commit()
         db.refresh(new_message)
         return new_message

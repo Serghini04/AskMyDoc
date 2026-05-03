@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 import logging
 from uuid import UUID
-from functools import lru_cache
 
 import fitz  # PyMuPDF
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -13,12 +12,7 @@ from app.database import SessionLocal
 from app.models.document import Document
 from app.repositories.chunk_repo import ChunkRepository
 from app.services.embeddings import BaseEmbeddingService, BGEM3EmbeddingService
-from app.services.qdrant import QdrantService
-
-
-@lru_cache(maxsize=1)
-def get_qdrant_service() -> QdrantService:
-    return QdrantService()
+from app.services.qdrant import get_qdrant_service
 
 def extract_text(file_path: str, ext: str) -> str:
     """
@@ -131,6 +125,10 @@ def process_document_background(
                 embedding_service = BGEM3EmbeddingService()
 
             print(f"Starting background processsing for document {doc_id} ...")
+            doc = db.query(Document).filter(Document.id == doc_id).first()
+            if doc:
+                doc.status = "PROCESSING"
+                db.commit()
             chunks_created = process_document(db, doc_id, file_path, ext, embedding_service)
             
             # Update the Document status in the DB:

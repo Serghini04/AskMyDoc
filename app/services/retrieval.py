@@ -1,7 +1,7 @@
 from uuid import UUID
 from sqlalchemy.orm import Session
 from app.services.embeddings import BaseEmbeddingService
-from app.services.qdrant import QdrantService, get_qdrant_service
+from app.services.qdrant import get_qdrant_service
 from app.models.document import Chunk
 
 class RetrievalService:
