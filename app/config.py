@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 
 class Settings(BaseSettings):
     # Database Config
@@ -16,7 +16,18 @@ class Settings(BaseSettings):
     QDRANT_URL: str
 
     # AI Config
-    OPENAI_API_KEY: SecretStr 
+    LLM_PROVIDER: str = "gemini"
+    OPENAI_API_KEY: SecretStr | None = None
+    GEMINI_API_KEY: SecretStr | None = None
+
+    @model_validator(mode="after")
+    def validate_llm_keys(self) -> "Settings":
+        provider = (self.LLM_PROVIDER or "gemini").lower()
+        if provider == "gemini" and not self.GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY is required when LLM_PROVIDER=gemini")
+        if provider == "openai" and not self.OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
+        return self
 
     # Instruct Pydantic to read from the .env file in the root directory
     model_config = SettingsConfigDict(
