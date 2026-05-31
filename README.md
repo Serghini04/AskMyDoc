@@ -109,6 +109,7 @@ flowchart TD
 - `POST /api/v1/sessions/`
 - `GET /api/v1/sessions/`
 - `GET /api/v1/sessions/{session_id}`
+- `DELETE /api/v1/sessions/{session_id}`
 - `POST /api/v1/sessions/{session_id}/chat`
 
 ## Tech Stack
@@ -141,7 +142,8 @@ Make sure `.env` includes at least:
 - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST`, `POSTGRES_PORT`
 - `DATABASE_URL`
 - `QDRANT_HOST`, `QDRANT_PORT`, `QDRANT_URL`
-- `OPENAI_API_KEY`
+- `LLM_PROVIDER` ("gemini" or "openai")
+- `GEMINI_API_KEY` or `OPENAI_API_KEY`
 
 ### 2. Start Infrastructure
 

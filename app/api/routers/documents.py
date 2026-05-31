@@ -5,17 +5,18 @@ import mimetypes
 import logging
 from typing import List
 from uuid import UUID
-from app.services.qdrant import get_qdrant_service
+
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db
+from app.config import settings
 from app.schemas.document import DocumentResponse
 from app.repositories.document_repo import DocumentRepository
 from app.models.document import Document
-from app.models.chat import ChatSession
 from app.services.ingestion import process_document_background
+from app.services.qdrant import get_qdrant_service
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -40,20 +41,30 @@ async def upload_document(
         )
 
     file_content = await file.read()
+    file_size = len(file_content)
+
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    if file_size > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds the maximum allowed size of {settings.MAX_UPLOAD_SIZE_MB} MB.",
+        )
+
     file_hash = hashlib.sha256(file_content).hexdigest()
-    
-    existing_doc = DocumentRepository.get_by_hash(db, file_hash)
+
+    existing_doc = DocumentRepository.get_by_hash_and_session(db, file_hash, session_id)
     if existing_doc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"File already exists with ID: {existing_doc.id}"
         )
-    
+
     try:
         new_doc = DocumentRepository.create(
             db=db,
             filename=file.filename,
             file_hash=file_hash,
+            file_size_bytes=file_size,
             session_id=session_id,
         )
     except ValueError as exc:
@@ -148,7 +159,7 @@ async def download_document(
         )
     
     _, ext = os.path.splitext(doc.filename)
-    file_path = os.path.join(UPLOAD_DIR, f"{doc.id}{ext}")
+    file_path = os.path.join(UPLOAD_DIR, f"{doc.id}{ext.lower()}")
     
     if not os.path.exists(file_path):
         raise HTTPException(

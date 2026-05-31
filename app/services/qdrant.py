@@ -11,23 +11,19 @@ class QdrantService:
         self._ensure_collection_exists()
         
     def _ensure_collection_exists(self):
-        """
-        Checks if the collection exists. If not, it creates it with the
-        exact dimensions needed for BGE-M3 (1024)
-        """
         collections = self.client.get_collections().collections
         exists = any(col.name == self.collection_name for col in collections)
-        
+
         if not exists:
-            logging.info(f"Creating Qdrant collection: {self.collection_name}")
+            logging.info("Creating Qdrant collection: %s (%d dims)", self.collection_name, settings.EMBEDDING_DIMENSIONS)
             self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=models.VectorParams(
-                    size=1024,
-                    distance=models.Distance.COSINE
-                )
+                    size=settings.EMBEDDING_DIMENSIONS,
+                    distance=models.Distance.COSINE,
+                ),
             )
-            logging.info("Collection created successfully.")
+            logging.info("Qdrant collection created.")
             
     def upsert_points(self, points: list[dict]):
         """
@@ -48,31 +44,27 @@ class QdrantService:
             points=qdrant_points
         )
         
-        logging.info(f"Successfully upserted {len(points)} vectors to Qdrant.")
+        logging.info("Upserted %d vectors to Qdrant.", len(points))
     
     def search_similar_chunks(self, query_vector: list[float], session_id: str, limit: int = 5):
-        """
-        Searches for the most similar vectors, filtered directly by session_id.
-        This seamlessly handles 1 file or 100 files inside the same chat session!
-        """
         doc_filter = models.Filter(
             must=[
                 models.FieldCondition(
                     key="session_id",
-                    match=models.MatchValue(value=session_id)
+                    match=models.MatchValue(value=session_id),
                 )
             ]
         )
 
-        search_results = self.client.search(
+        results = self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             query_filter=doc_filter,
-            limit=limit
-        )
+            limit=limit,
+        ).points
 
-        logging.info(f"Retrieved {len(search_results)} chunks from Qdrant.")
-        return search_results
+        logging.info("Retrieved %d chunks from Qdrant.", len(results))
+        return results
 
     def delete_points_by_document(self, document_id: str) -> None:
         """Delete all vectors for a document using its payload filter."""

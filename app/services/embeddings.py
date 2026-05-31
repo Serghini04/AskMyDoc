@@ -1,21 +1,30 @@
-import torch
+import logging
 from abc import ABC, abstractmethod
+from functools import lru_cache
 from typing import List
-from sentence_transformers import SentenceTransformer
+
+from fastembed import TextEmbedding
+
+from app.config import settings
+
 
 class BaseEmbeddingService(ABC):
     @abstractmethod
     def embed_text(self, text: str) -> List[float]:
         pass
 
-class BGEM3EmbeddingService(BaseEmbeddingService):
+
+class FastEmbedService(BaseEmbeddingService):
     def __init__(self):
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Loading BGE-M3 model into memory on {device.upper()}...")
-        
-        self.model = SentenceTransformer('BAAI/bge-m3', device=device)
-        print("BGE-M3 model loaded successfully!")
+        logging.info("Loading embedding model: %s", settings.FASTEMBED_MODEL)
+        self._model = TextEmbedding(model_name=settings.FASTEMBED_MODEL)
+        logging.info("Embedding model ready.")
 
     def embed_text(self, text: str) -> List[float]:
-        embedding = self.model.encode(text)
-        return embedding.tolist()
+        embeddings = list(self._model.embed([text]))
+        return embeddings[0].tolist()
+
+
+@lru_cache(maxsize=1)
+def get_embedding_service() -> BaseEmbeddingService:
+    return FastEmbedService()

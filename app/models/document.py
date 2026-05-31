@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, Text, ForeignKey, DateTime, Integer, Index
+from sqlalchemy import String, Text, ForeignKey, DateTime, Integer, BigInteger, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -9,9 +9,10 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    
+
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    file_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    file_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(50), default="PENDING")
     
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -31,10 +32,10 @@ class Chunk(Base):
     
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    vector_id: Mapped[uuid.UUID] = mapped_column(nullable=True, index=True)
-    
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     document: Mapped["Document"] = relationship("Document", back_populates="chunks")
 
 Index('idx_chunk_document_id', Chunk.document_id)
+Index('ix_documents_file_hash_session_id', Document.file_hash, Document.session_id)

@@ -8,37 +8,24 @@ services:
     env_file:
       - .env
     environment:
-      # Tell HuggingFace exactly where to save/load the 2.2GB model
-      - HF_HOME=/root/.cache/huggingface
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - QDRANT_URL=http://qdrant:6333
     volumes:
-      # Map your local code so you don't have to rebuild the image on every code change
-      - .:/app
-      # The permanent cache for the AI model
-      - huggingface_cache:/root/.cache/huggingface
+      - uploads_data:/app/uploads
     depends_on:
-      # Wait for the DB to actually be ready, not just started
       postgres:
-        condition: service_healthy 
+        condition: service_healthy
       qdrant:
         condition: service_started
-    deploy:
-      resources:
-        reservations:
-          devices:
-            # SENIOR MOVE: This block unlocks your GTX 1650 inside the container!
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
   postgres:
-    image: postgres:15-alpine 
+    image: postgres:16-alpine
     container_name: rag_postgres
     restart: unless-stopped
     env_file:
-      - .env 
+      - .env
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -47,15 +34,16 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 10s
 
   qdrant:
     image: qdrant/qdrant:latest
     container_name: rag_qdrant
     restart: unless-stopped
     ports:
-      - "${QDRANT_PORT:-6333}:6333" 
-      - "6334:6334"                 
+      - "${QDRANT_PORT:-6333}:6333"
+      - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
 
@@ -67,7 +55,6 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      # Preselect the postgres service as the default server in login form.
       - ADMINER_DEFAULT_SERVER=postgres
     ports:
       - "${ADMINER_PORT:-8080}:8080"
@@ -75,4 +62,4 @@ services:
 volumes:
   postgres_data:
   qdrant_data:
-  huggingface_cache: # Declare the new AI cache volume
+  uploads_data:

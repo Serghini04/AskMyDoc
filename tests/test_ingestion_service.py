@@ -24,6 +24,7 @@ def test_process_document_persists_chunks_and_upserts(db_session, monkeypatch):
         db=db_session,
         filename="doc.txt",
         file_hash="f" * 64,
+        file_size_bytes=128,
         session_id=chat_session.id,
     )
 
@@ -78,6 +79,7 @@ def test_process_document_background_updates_status_success_and_failure(
         db=success_db,
         filename="ok.txt",
         file_hash="a" * 64,
+        file_size_bytes=64,
         session_id=success_session.id,
     )
     success_db.close()
@@ -103,6 +105,7 @@ def test_process_document_background_updates_status_success_and_failure(
         db=failure_db,
         filename="bad.txt",
         file_hash="b" * 64,
+        file_size_bytes=64,
         session_id=failure_session.id,
     )
     failure_db.close()

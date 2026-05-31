@@ -1,5 +1,7 @@
+import logging
 from uuid import UUID
 from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -9,6 +11,9 @@ from app.schemas.chat import ChatSessionResponse, ChatRequest, ChatMessageRespon
 from app.repositories.chat_repo import ChatSessionRepository, ChatMessageRepository
 from app.services.retrieval import RetrievalService
 from app.services.llm import BaseLLMService, get_llm_service
+from app.services.qdrant import get_qdrant_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sessions", tags=["Chat Sessions"])
 
@@ -29,6 +34,24 @@ async def get_chat_session(session_id: UUID, db: Session = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     return session
+
+
+@router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_chat_session(session_id: UUID, db: Session = Depends(get_db)):
+    """Delete a session and all its messages, documents, chunks, and vectors."""
+    session = ChatSessionRepository.get_by_id(db=db, session_id=session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    for doc in session.documents:
+        try:
+            get_qdrant_service().delete_points_by_document(str(doc.id))
+        except Exception as exc:
+            logger.warning("Failed to delete Qdrant vectors for document_id=%s: %s", doc.id, exc)
+
+    db.delete(session)
+    db.commit()
+    return None
 
 @router.post("/{session_id}/chat", response_model=ChatMessageResponse)
 async def chat_with_documents(

@@ -13,6 +13,7 @@ class DocumentRepository:
         db: Session,
         filename: str,
         file_hash: str,
+        file_size_bytes: int,
         session_id: uuid.UUID | None = None,
     ) -> Document:
         """Inserts a new document record into the DB."""
@@ -23,16 +24,29 @@ class DocumentRepository:
         if session is None:
             raise ValueError("session_id does not exist")
 
-        db_doc = Document(filename=filename, file_hash=file_hash, session_id=session_id)
+        db_doc = Document(
+            filename=filename,
+            file_hash=file_hash,
+            file_size_bytes=file_size_bytes,
+            session_id=session_id,
+        )
         db.add(db_doc)
         db.commit()
         db.refresh(db_doc)
         return db_doc
         
     @staticmethod
-    def get_by_hash(db: Session, file_hash: str) -> Document | None:
-        """Checks if a file has already been updateded to prevent duplicates"""
-        return db.query(Document).filter(Document.file_hash == file_hash).first()
+    def get_by_hash_and_session(
+        db: Session,
+        file_hash: str,
+        session_id: uuid.UUID,
+    ) -> Document | None:
+        """Checks if a file already exists in the same session to prevent duplicates."""
+        return (
+            db.query(Document)
+            .filter(Document.file_hash == file_hash, Document.session_id == session_id)
+            .first()
+        )
     
     @staticmethod
     def update_status(db: Session, doc_id: UUID, status: str) -> Document | None:

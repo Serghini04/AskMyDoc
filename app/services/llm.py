@@ -1,8 +1,12 @@
-import os
 import logging
 from abc import ABC, abstractmethod
+from functools import lru_cache
 from typing import List, Dict
-import google.generativeai as genai
+
+from openai import OpenAI
+
+from app.config import settings
+
 
 class BaseLLMService(ABC):
     @abstractmethod
@@ -11,61 +15,43 @@ class BaseLLMService(ABC):
         system_prompt: str,
         context: str,
         history: List[Dict[str, str]],
-        question: str
-    ) -> str :
-        """
-            Takes the RAG context, chat history, and new question,
-            and returns the AI's response as a string.
-        """
+        question: str,
+    ) -> str:
         pass
 
-class GeminiLLMService(BaseLLMService):
+
+class GitHubModelsService(BaseLLMService):
     def __init__(self):
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            logging.warning("GEMINI_API_KEY is missing from environment variables!")
-            
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
-        
+        token = settings.GITHUB_TOKEN.get_secret_value() if settings.GITHUB_TOKEN else None
+        if not token:
+            logging.warning("GITHUB_TOKEN is missing.")
+        self.client = OpenAI(
+            base_url="https://models.inference.ai.azure.com",
+            api_key=token,
+        )
+        self.model = settings.GITHUB_MODEL
+
     def generate_answer(
-            self, 
-            system_prompt: str, 
-            context: str, 
-            history: List[Dict[str, str]], 
-            question: str
-        ) -> str:
-            full_system_instruction = f"{system_prompt}\n\nCONTEXT FROM DOCUMENTS:\n{context}"
-            
-            # Gemini expects roles to be 'user' and 'model' (not 'assistant')
-            gemini_history = []
-            for msg in history:
-                role = "user" if msg["role"] == "user" else "model"
-                gemini_history.append({
-                    "role": role,
-                    "parts": [msg["content"]]
-                })
+        self,
+        system_prompt: str,
+        context: str,
+        history: List[Dict[str, str]],
+        question: str,
+    ) -> str:
+        full_system = f"{system_prompt}\n\nCONTEXT FROM DOCUMENTS:\n{context}"
 
-            chat = self.model.start_chat(history=gemini_history)
+        messages = [{"role": "system", "content": full_system}]
+        for msg in history:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": question})
 
-            final_prompt = f"{full_system_instruction}\n\nUSER QUESTION:\n{question}"
-            
-            response = chat.send_message(final_prompt)
-            
-            return response.text
-    
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+        )
+        return response.choices[0].message.content or ""
+
+
+@lru_cache(maxsize=1)
 def get_llm_service() -> BaseLLMService:
-    """
-    Reads the environment configuration to determine which LLM to use.
-    Right now, it defaults to Gemini.
-    """
-    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-    
-    if provider == "gemini":
-        return GeminiLLMService()
-    # elif provider == "openai":
-    #     return OpenAILLMService()
-    # elif provider == "anthropic":
-    #     return AnthropicLLMService()
-    else:
-        raise ValueError(f"Unsupported LLM provider: {provider}")
+    return GitHubModelsService()

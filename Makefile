@@ -12,17 +12,21 @@ UVICORN := $(VENV_DIR)/bin/uvicorn
 ALEMBIC := $(VENV_DIR)/bin/alembic
 COMPOSE := docker compose
 
-.PHONY: help check-venv install up down restart logs ps run migrate makemigration downgrade test test-verbose
+.PHONY: help check-venv install up dev prod build rebuild down restart logs ps run migrate makemigration downgrade test test-verbose
 
 help:
 	@echo "Available targets:"
 	@echo "  make install                      - Install Python dependencies"
-	@echo "  make up                           - Start Docker containers"
+	@echo "  make dev                          - Start in dev mode (hot reload, bind mount)"
+	@echo "  make prod                         - Start in prod mode (no bind mount, no reload)"
+	@echo "  make up                           - Alias for dev"
+	@echo "  make build                        - Rebuild Docker images (no cache)"
+	@echo "  make rebuild                      - Stop, rebuild, and restart (prod)"
 	@echo "  make down                         - Stop Docker containers"
 	@echo "  make restart                      - Restart Docker containers"
 	@echo "  make logs                         - Show Docker logs"
 	@echo "  make ps                           - Show container status"
-	@echo "  make run                          - Run FastAPI app (uvicorn)"
+	@echo "  make run                          - Run FastAPI app locally (uvicorn)"
 	@echo "  make test                         - Run tests (quiet)"
 	@echo "  make test-verbose                 - Run tests (verbose)"
 	@echo "  make migrate                      - Apply DB migrations (upgrade head)"
@@ -35,8 +39,18 @@ check-venv:
 install: check-venv
 	$(PIP) install -r requirements.txt
 
-up:
+dev:
 	$(COMPOSE) up -d
+
+up: dev
+
+prod:
+	$(COMPOSE) -f docker-compose.yml up -d
+
+build:
+	$(COMPOSE) build --no-cache
+
+rebuild: down build prod
 
 down:
 	$(COMPOSE) down

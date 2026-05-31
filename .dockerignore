@@ -1,0 +1,29 @@
+# Python virtual environments — never go in the image
+venv/
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Uploaded files — mounted as a named volume at runtime
+uploads/
+
+# Local environment — secrets must not be baked into the image
+.env
+
+# Git history
+.git/
+.gitignore
+
+# Editor and OS noise
+.vscode/
+.idea/
+*.DS_Store
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage

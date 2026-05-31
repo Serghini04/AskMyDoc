@@ -64,9 +64,10 @@ def test_upload_list_get_download_delete_full_flow(api_client, monkeypatch, sess
     assert missing_response.status_code == 404
 
 
-def test_upload_rejects_duplicate_by_hash(api_client, monkeypatch, session_maker):
+def test_upload_rejects_duplicate_by_hash_per_session(api_client, monkeypatch, session_maker):
     monkeypatch.setattr(documents, "process_document_background", lambda *args, **kwargs: None)
     session_id = _create_session_id(session_maker)
+    other_session_id = _create_session_id(session_maker)
 
     file_payload = {"file": ("same.txt", b"same content", "text/plain")}
     form_data = {"session_id": session_id}
@@ -76,6 +77,13 @@ def test_upload_rejects_duplicate_by_hash(api_client, monkeypatch, session_maker
 
     second = api_client.post("/api/v1/documents/", data=form_data, files=file_payload)
     assert second.status_code == 409
+
+    third = api_client.post(
+        "/api/v1/documents/",
+        data={"session_id": other_session_id},
+        files=file_payload,
+    )
+    assert third.status_code == 201
 
 
 def test_upload_rejects_unsupported_extension(api_client, session_maker):

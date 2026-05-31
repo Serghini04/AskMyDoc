@@ -8,6 +8,9 @@ class DocumentBase(BaseModel):
 class DocumentResponse(DocumentBase):
     id: UUID
     file_hash: str
+    file_size_bytes: int
     status: str
     session_id: UUID
     created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

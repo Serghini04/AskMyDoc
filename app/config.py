@@ -1,8 +1,9 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import SecretStr, model_validator
+from pydantic import SecretStr
+
 
 class Settings(BaseSettings):
-    # Database Config
+    # Database
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
@@ -10,30 +11,29 @@ class Settings(BaseSettings):
     POSTGRES_PORT: int
     DATABASE_URL: str
 
-    # Vector DB Config
+    # Vector DB
     QDRANT_HOST: str
     QDRANT_PORT: int
     QDRANT_URL: str
 
-    # AI Config
-    LLM_PROVIDER: str = "gemini"
-    OPENAI_API_KEY: SecretStr | None = None
-    GEMINI_API_KEY: SecretStr | None = None
+    # LLM — GitHub Models (Azure OpenAI-compatible endpoint)
+    GITHUB_TOKEN: SecretStr
+    GITHUB_MODEL: str = "o4-mini"
 
-    @model_validator(mode="after")
-    def validate_llm_keys(self) -> "Settings":
-        provider = (self.LLM_PROVIDER or "gemini").lower()
-        if provider == "gemini" and not self.GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY is required when LLM_PROVIDER=gemini")
-        if provider == "openai" and not self.OPENAI_API_KEY:
-            raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
-        return self
+    # Embeddings — fastembed local ONNX model, no API key required
+    # BAAI/bge-small-en-v1.5 → 384 dims
+    # BAAI/bge-base-en-v1.5  → 768 dims
+    FASTEMBED_MODEL: str = "BAAI/bge-small-en-v1.5"
+    EMBEDDING_DIMENSIONS: int = 384
 
-    # Instruct Pydantic to read from the .env file in the root directory
+    # Upload
+    MAX_UPLOAD_SIZE_MB: int = 50
+
     model_config = SettingsConfigDict(
-        env_file=".env", 
-        env_file_encoding="utf-8", 
-        extra="ignore"
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
+
 
 settings = Settings()
