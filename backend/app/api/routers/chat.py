@@ -11,7 +11,7 @@ from app.schemas.chat import ChatSessionResponse, ChatRequest, ChatMessageRespon
 from app.repositories.chat_repo import ChatSessionRepository, ChatMessageRepository
 from app.services.retrieval import RetrievalService
 from app.services.llm import BaseLLMService, LLMUnavailableError, get_llm_service
-from app.services.qdrant import get_qdrant_service
+from app.services.ingestion import purge_document_artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -73,14 +73,11 @@ async def delete_chat_session(session_id: UUID, db: Session = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
-    for doc in session.documents:
-        try:
-            get_qdrant_service().delete_points_by_document(str(doc.id))
-        except Exception as exc:
-            logger.warning("Failed to delete Qdrant vectors for document_id=%s: %s", doc.id, exc)
-
+    documents = [(doc.id, doc.filename) for doc in session.documents]
     db.delete(session)
     db.commit()
+    for doc_id, filename in documents:
+        purge_document_artifacts(doc_id, filename)
     return None
 
 @router.post("/{session_id}/chat", response_model=ChatMessageResponse)
@@ -97,13 +94,6 @@ async def chat_with_documents(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    user_message = ChatMessageRepository.create(
-        db=db,
-        session_id=session_id,
-        role="user",
-        content=request.message
-    )
-    
     context = RetrievalService.get_context_for_query(
         db=db,
         session_id=session_id,
@@ -112,11 +102,13 @@ async def chat_with_documents(
         limit=5
     )
     
-    raw_history = ChatMessageRepository.get_recent_by_session(db=db, session_id=session_id, limit=6)
+    # Prior turns only: the question is persisted after the LLM succeeds, so a
+    # failed attempt leaves no orphan question and Retry doesn't duplicate it.
+    raw_history = ChatMessageRepository.get_recent_by_session(db=db, session_id=session_id, limit=5)
 
     formatted_history = [
-        {"role": msg.role, "content": msg.content} 
-        for msg in raw_history[:-1] 
+        {"role": msg.role, "content": msg.content}
+        for msg in raw_history
     ]
     
     system_prompt = (
@@ -140,6 +132,12 @@ async def chat_with_documents(
             detail="The AI model is busy right now. Please try again in a few seconds.",
         ) from exc
 
+    ChatMessageRepository.create(
+        db=db,
+        session_id=session_id,
+        role="user",
+        content=request.message
+    )
     ai_message = ChatMessageRepository.create(
         db=db,
         session_id=session_id,

@@ -2,7 +2,6 @@ import os
 import shutil
 import hashlib
 import mimetypes
-import logging
 from typing import List
 from uuid import UUID
 
@@ -15,8 +14,12 @@ from app.config import settings
 from app.schemas.document import DocumentResponse
 from app.repositories.document_repo import DocumentRepository
 from app.models.document import Document
-from app.services.ingestion import UPLOAD_DIR, process_document_background, stored_file_path
-from app.services.qdrant import get_qdrant_service
+from app.services.ingestion import (
+    UPLOAD_DIR,
+    process_document_background,
+    purge_document_artifacts,
+    stored_file_path,
+)
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -128,17 +131,10 @@ async def delete_document(
             detail="Document not found"
         )
     
-    file_path = stored_file_path(doc.id, doc.filename)
-    if os.path.exists(file_path):
-        os.remove(file_path)
-    
-    try:
-        get_qdrant_service().delete_points_by_document(str(doc.id))
-    except Exception as exc:
-        logging.warning("Failed to delete Qdrant vectors for document_id=%s: %s", doc.id, exc)
-
+    doc_id, filename = doc.id, doc.filename
     db.delete(doc)
     db.commit()
+    purge_document_artifacts(doc_id, filename)
     return None
 
 

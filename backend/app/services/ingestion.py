@@ -5,7 +5,7 @@ import re
 import logging
 from uuid import UUID
 
-import fitz  # PyMuPDF
+import pymupdf
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sqlalchemy.orm import Session
 
@@ -30,7 +30,7 @@ def stored_file_path(doc_id: UUID | str, filename: str) -> str:
 def extract_text(file_path: str, ext: str) -> str:
     raw_text = ""
     if ext == ".pdf":
-        doc = fitz.open(file_path)
+        doc = pymupdf.open(file_path)
         for page_num in range(len(doc)):
             raw_text += doc.load_page(page_num).get_text()
         doc.close()
@@ -149,3 +149,23 @@ def resume_unfinished_documents() -> None:
             continue
         _, ext = os.path.splitext(filename)
         process_document_background(doc_id, file_path, ext.lower())
+
+
+def purge_document_artifacts(doc_id: UUID | str, filename: str) -> None:
+    """
+    Best-effort removal of a document's file and vectors. Call after the DB
+    delete has committed: leftovers are harmless (retrieval only returns chunks
+    that still exist in Postgres), whereas the reverse order could leave a DB
+    row pointing at a file that's already gone.
+    """
+    file_path = stored_file_path(doc_id, filename)
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except OSError as exc:
+        logging.warning("Failed to delete file %s: %s", file_path, exc)
+
+    try:
+        get_qdrant_service().delete_points_by_document(str(doc_id))
+    except Exception as exc:
+        logging.warning("Failed to delete Qdrant vectors for document_id=%s: %s", doc_id, exc)

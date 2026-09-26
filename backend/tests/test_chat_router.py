@@ -67,3 +67,5 @@ def test_chat_returns_503_when_llm_unavailable(api_client, monkeypatch):
 
     assert response.status_code == 503
     assert "busy" in response.json()["detail"]
+    # Nothing persisted: Retry must not leave a duplicate unanswered question.
+    assert api_client.get(f"/api/v1/sessions/{session_id}").json()["messages"] == []

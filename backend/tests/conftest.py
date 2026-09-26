@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.dependencies import get_db, get_embedding_service
 from app.api.routers import documents, chat
+from app.services import ingestion
 from app.database import Base
 from app.services.llm import get_llm_service
 from app.models import chat as chat_models  # noqa: F401
@@ -17,6 +18,14 @@ from app.models import document as document_models  # noqa: F401
 class DummyEmbeddingService:
     def embed_text(self, text: str) -> list[float]:
         return [float(len(text)), 1.0, 2.0]
+
+
+class FakeQdrantService:
+    def __init__(self):
+        self.deleted_documents: list[str] = []
+
+    def delete_points_by_document(self, document_id: str) -> None:
+        self.deleted_documents.append(document_id)
 
 
 class DummyLLMService:
@@ -55,10 +64,20 @@ def db_session(session_maker) -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def api_client(tmp_path, session_maker, monkeypatch) -> Generator[TestClient, None, None]:
+def fake_qdrant() -> FakeQdrantService:
+    return FakeQdrantService()
+
+
+@pytest.fixture
+def api_client(
+    tmp_path, session_maker, monkeypatch, fake_qdrant
+) -> Generator[TestClient, None, None]:
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(documents, "UPLOAD_DIR", str(upload_dir))
+    # stored_file_path() reads ingestion.UPLOAD_DIR; patch it so tests never
+    # write into the real uploads/ folder.
+    monkeypatch.setattr(ingestion, "UPLOAD_DIR", str(upload_dir))
+    monkeypatch.setattr(ingestion, "get_qdrant_service", lambda: fake_qdrant)
 
     app = FastAPI()
     app.include_router(documents.router, prefix="/api/v1")

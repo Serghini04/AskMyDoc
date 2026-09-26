@@ -1,4 +1,7 @@
+import os
+
 from app.api.routers import documents
+from app.services import ingestion
 from app.services import retrieval
 
 
@@ -69,7 +72,7 @@ def test_rename_session_rejects_empty_title(api_client):
     assert response.status_code == 422  # stripped to empty -> fails min_length
 
 
-def test_delete_session_removes_session_and_returns_204(api_client, monkeypatch):
+def test_delete_session_removes_session_and_returns_204(api_client, monkeypatch, fake_qdrant):
     monkeypatch.setattr(documents, "process_document_background", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         retrieval.RetrievalService,
@@ -79,14 +82,20 @@ def test_delete_session_removes_session_and_returns_204(api_client, monkeypatch)
 
     session_id = api_client.post("/api/v1/sessions/").json()["id"]
 
-    api_client.post(
+    doc_id = api_client.post(
         "/api/v1/documents/",
         data={"session_id": session_id},
         files={"file": ("note.txt", b"hello", "text/plain")},
-    )
+    ).json()["id"]
+    stored = os.path.join(ingestion.UPLOAD_DIR, f"{doc_id}.txt")
+    assert os.path.exists(stored)
 
     delete_response = api_client.delete(f"/api/v1/sessions/{session_id}")
     assert delete_response.status_code == 204
+
+    # Files and vectors of the session's documents are cleaned up too.
+    assert not os.path.exists(stored)
+    assert fake_qdrant.deleted_documents == [doc_id]
 
     get_response = api_client.get(f"/api/v1/sessions/{session_id}")
     assert get_response.status_code == 404
