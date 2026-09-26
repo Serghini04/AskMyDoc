@@ -1,219 +1,167 @@
-from types import SimpleNamespace
+from uuid import UUID
 
-from app.models.chat import ChatSession
-from app.repositories.document_repo import DocumentRepository
-from app.models.document import Chunk, Document
-from app.services import ingestion
+import pymupdf
+import pytest
+from sqlalchemy import select
 
-
-class DummyEmbeddingService:
-    def embed_text(self, text: str) -> list[float]:
-        return [float(len(text)), 1.0, 2.0]
-
-
-def _create_session(db_session) -> ChatSession:
-    session = ChatSession(title="ingestion test")
-    db_session.add(session)
-    db_session.flush()
-    return session
+from app.models import ChatSession, Chunk, Document, DocumentStatus
+from app.services import ingestion, storage
+from app.services.embeddings import BaseEmbeddingService, EmbeddingUnavailableError
+from tests.conftest import DummyEmbeddingService
 
 
-def test_process_document_persists_chunks_and_upserts(db_session, monkeypatch):
-    chat_session = _create_session(db_session)
-    doc = DocumentRepository.create(
-        db=db_session,
-        filename="doc.txt",
-        file_hash="f" * 64,
-        file_size_bytes=128,
+class DownEmbeddings(BaseEmbeddingService):
+    def embed_texts(self, texts):
+        raise EmbeddingUnavailableError("provider down")
+
+
+def _document(db, filename="doc.txt", content="hello world", status=DocumentStatus.PENDING):
+    chat_session = ChatSession(title="ingestion test")
+    db.add(chat_session)
+    db.flush()
+    document = Document(
+        filename=filename,
+        file_hash=filename.ljust(64, "0")[:64],
+        file_size_bytes=len(content or ""),
         session_id=chat_session.id,
+        status=status,
     )
+    db.add(document)
+    db.commit()
+    if content is not None:
+        storage.stored_file_path(document.id, filename).write_text(content, encoding="utf-8")
+    return document
 
-    monkeypatch.setattr(ingestion, "extract_text", lambda *_: "raw")
-    monkeypatch.setattr(ingestion, "clean_text", lambda text: text)
-    monkeypatch.setattr(
-        ingestion,
-        "chunk_document_text",
-        lambda *_args, **_kwargs: ["chunk-0", "chunk-1", "chunk-2"],
-    )
 
-    captured = {"points": None}
+def _chunks(db, document_id: UUID) -> list[Chunk]:
+    stmt = select(Chunk).where(Chunk.document_id == document_id).order_by(Chunk.chunk_index)
+    return list(db.scalars(stmt))
 
-    class FakeQdrant:
-        def upsert_points(self, points):
-            captured["points"] = points
 
-        def delete_points_by_document(self, document_id):
-            pass
+# --- text processing ---------------------------------------------------------
 
-    monkeypatch.setattr(ingestion, "get_qdrant_service", lambda: FakeQdrant())
 
-    count = ingestion.process_document(
-        db=db_session,
-        doc_id=doc.id,
-        file_path="unused.txt",
-        ext=".txt",
-        embedding_service=DummyEmbeddingService(),
-    )
+def test_extract_text_from_txt_and_pdf(tmp_path):
+    txt = tmp_path / "a.txt"
+    txt.write_text("plain text", encoding="utf-8")
+    assert ingestion.extract_text(txt) == "plain text"
+
+    pdf_path = tmp_path / "a.pdf"
+    with pymupdf.open() as pdf:
+        pdf.new_page().insert_text((72, 72), "Hello from a PDF")
+        pdf.save(pdf_path)
+    assert "Hello from a PDF" in ingestion.extract_text(pdf_path)
+
+
+def test_extract_text_rejects_other_types(tmp_path):
+    with pytest.raises(ValueError):
+        ingestion.extract_text(tmp_path / "a.docx")
+
+
+def test_clean_text_joins_hyphenation_and_collapses_whitespace():
+    assert ingestion.clean_text("docu-\nment\n\nline   two ") == "document line two"
+
+
+# --- index_document ----------------------------------------------------------
+
+
+def test_index_document_persists_chunks_and_vectors(db_session, fake_qdrant, monkeypatch):
+    document = _document(db_session)
+    monkeypatch.setattr(ingestion, "split_into_chunks", lambda _text: ["c-0", "c-1", "c-2"])
+
+    count = ingestion.index_document(db_session, document, DummyEmbeddingService())
+    db_session.commit()
 
     assert count == 3
-
-    chunks = (
-        db_session.query(Chunk)
-        .filter(Chunk.document_id == doc.id)
-        .order_by(Chunk.chunk_index.asc())
-        .all()
-    )
-    assert [chunk.chunk_index for chunk in chunks] == [0, 1, 2]
-    assert [chunk.content for chunk in chunks] == ["chunk-0", "chunk-1", "chunk-2"]
-
-    assert captured["points"] is not None
-    assert [point["payload"]["chunk_index"] for point in captured["points"]] == [0, 1, 2]
-    assert all(point["payload"]["document_id"] == str(doc.id) for point in captured["points"])
-
-
-def test_process_document_background_updates_status_success_and_failure(
-    session_maker, monkeypatch
-):
-    monkeypatch.setattr(ingestion, "SessionLocal", session_maker)
-
-    success_db = session_maker()
-    success_session = _create_session(success_db)
-    success_doc = DocumentRepository.create(
-        db=success_db,
-        filename="ok.txt",
-        file_hash="a" * 64,
-        file_size_bytes=64,
-        session_id=success_session.id,
-    )
-    success_db.close()
-
-    monkeypatch.setattr(ingestion, "process_document", lambda *_args, **_kwargs: 2)
-
-    ingestion.process_document_background(
-        doc_id=success_doc.id,
-        file_path="unused.txt",
-        ext=".txt",
-        embedding_service=SimpleNamespace(embed_text=lambda _text: [0.0]),
+    chunks = _chunks(db_session, document.id)
+    assert [c.content for c in chunks] == ["c-0", "c-1", "c-2"]
+    # Each vector's point ID is its chunk's ID, tagged with document and session.
+    assert set(fake_qdrant.points) == {c.id for c in chunks}
+    point = fake_qdrant.points[chunks[1].id]
+    assert (point.document_id, point.session_id, point.chunk_index) == (
+        document.id,
+        document.session_id,
+        1,
     )
 
-    check_success = session_maker()
-    updated_success = check_success.query(Document).filter(Document.id == success_doc.id).first()
-    assert updated_success is not None
-    assert updated_success.status == "COMPLETED"
-    check_success.close()
 
-    failure_db = session_maker()
-    failure_session = _create_session(failure_db)
-    failure_doc = DocumentRepository.create(
-        db=failure_db,
-        filename="bad.txt",
-        file_hash="b" * 64,
-        file_size_bytes=64,
-        session_id=failure_session.id,
-    )
-    failure_db.close()
-
-    def fail_process(*_args, **_kwargs):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(ingestion, "process_document", fail_process)
-
-    ingestion.process_document_background(
-        doc_id=failure_doc.id,
-        file_path="unused.txt",
-        ext=".txt",
-        embedding_service=SimpleNamespace(embed_text=lambda _text: [0.0]),
-    )
-
-    check_failure = session_maker()
-    updated_failure = check_failure.query(Document).filter(Document.id == failure_doc.id).first()
-    assert updated_failure is not None
-    assert updated_failure.status == "FAILED"
-    check_failure.close()
-
-
-def test_process_document_is_idempotent_on_retry(db_session, monkeypatch):
-    chat_session = _create_session(db_session)
-    doc = DocumentRepository.create(
-        db=db_session,
-        filename="retry.txt",
-        file_hash="c" * 64,
-        file_size_bytes=64,
-        session_id=chat_session.id,
-    )
-
-    monkeypatch.setattr(ingestion, "extract_text", lambda *_: "raw")
-    monkeypatch.setattr(ingestion, "clean_text", lambda text: text)
-    monkeypatch.setattr(
-        ingestion, "chunk_document_text", lambda *_args, **_kwargs: ["a", "b"]
-    )
-
-    deleted = []
-
-    class FakeQdrant:
-        def upsert_points(self, points):
-            pass
-
-        def delete_points_by_document(self, document_id):
-            deleted.append(document_id)
-
-    monkeypatch.setattr(ingestion, "get_qdrant_service", lambda: FakeQdrant())
+def test_index_document_is_idempotent(db_session, fake_qdrant, monkeypatch):
+    document = _document(db_session)
+    monkeypatch.setattr(ingestion, "split_into_chunks", lambda _text: ["a", "b"])
 
     for _ in range(2):
-        ingestion.process_document(
-            db=db_session,
-            doc_id=doc.id,
-            file_path="unused.txt",
-            ext=".txt",
-            embedding_service=DummyEmbeddingService(),
-        )
+        ingestion.index_document(db_session, document, DummyEmbeddingService())
+        db_session.commit()
 
-    assert db_session.query(Chunk).filter(Chunk.document_id == doc.id).count() == 2
-    assert deleted == [str(doc.id), str(doc.id)]
+    assert len(_chunks(db_session, document.id)) == 2
+    assert len(fake_qdrant.points) == 2
 
 
-def test_resume_unfinished_documents(session_maker, monkeypatch, tmp_path):
+def test_index_document_writes_nothing_when_embedding_fails(db_session, fake_qdrant):
+    document = _document(db_session)
+
+    with pytest.raises(EmbeddingUnavailableError):
+        ingestion.index_document(db_session, document, DownEmbeddings())
+
+    # Embedding runs before any write, so a provider outage leaves no partial state.
+    assert fake_qdrant.deleted_documents == []
+    assert fake_qdrant.points == {}
+    assert _chunks(db_session, document.id) == []
+
+
+# --- ingest_document (background entry point) ---------------------------------
+
+
+def test_ingest_document_marks_completed(session_maker, db_session, fake_qdrant, monkeypatch):
     monkeypatch.setattr(ingestion, "SessionLocal", session_maker)
-    monkeypatch.setattr(ingestion, "UPLOAD_DIR", str(tmp_path))
+    document = _document(db_session)
 
-    db = session_maker()
-    chat_session = _create_session(db)
-    docs = {}
-    for name, status in [
-        ("stuck.txt", "PROCESSING"),
-        ("missing.txt", "PENDING"),
-        ("done.txt", "COMPLETED"),
-    ]:
-        doc = DocumentRepository.create(
-            db=db,
-            filename=name,
-            file_hash=name[0] * 64,
-            file_size_bytes=8,
-            session_id=chat_session.id,
-        )
-        DocumentRepository.update_status(db, doc.id, status)
-        docs[name] = doc.id
-    db.close()
+    ingestion.ingest_document(document.id, embeddings=DummyEmbeddingService())
 
-    (tmp_path / f"{docs['stuck.txt']}.txt").write_text("content")
+    db_session.expire_all()
+    assert db_session.get(Document, document.id).status == DocumentStatus.COMPLETED
 
-    resumed = []
-    monkeypatch.setattr(
-        ingestion,
-        "process_document_background",
-        lambda doc_id, file_path, ext: resumed.append((doc_id, file_path, ext)),
-    )
+
+def test_ingest_document_marks_failed_on_error(session_maker, db_session, fake_qdrant, monkeypatch):
+    monkeypatch.setattr(ingestion, "SessionLocal", session_maker)
+    document = _document(db_session)
+
+    ingestion.ingest_document(document.id, embeddings=DownEmbeddings())
+
+    db_session.expire_all()
+    assert db_session.get(Document, document.id).status == DocumentStatus.FAILED
+
+
+def test_ingest_document_ignores_deleted_document(session_maker, monkeypatch):
+    monkeypatch.setattr(ingestion, "SessionLocal", session_maker)
+    ingestion.ingest_document(UUID(int=0), embeddings=DummyEmbeddingService())  # no error
+
+
+# --- recovery & cleanup ------------------------------------------------------
+
+
+def test_resume_unfinished_documents(session_maker, db_session, monkeypatch):
+    monkeypatch.setattr(ingestion, "SessionLocal", session_maker)
+    stuck = _document(db_session, "stuck.txt", status=DocumentStatus.PROCESSING)
+    missing = _document(db_session, "missing.txt", content=None, status=DocumentStatus.PENDING)
+    done = _document(db_session, "done.txt", status=DocumentStatus.COMPLETED)
+
+    resumed: list[UUID] = []
+    monkeypatch.setattr(ingestion, "ingest_document", resumed.append)
 
     ingestion.resume_unfinished_documents()
 
-    assert resumed == [
-        (docs["stuck.txt"], str(tmp_path / f"{docs['stuck.txt']}.txt"), ".txt")
-    ]
-    check = session_maker()
-    status = {
-        name: check.query(Document).filter(Document.id == doc_id).one().status
-        for name, doc_id in docs.items()
-    }
-    check.close()
-    assert status["missing.txt"] == "FAILED"
-    assert status["done.txt"] == "COMPLETED"
+    assert resumed == [stuck.id]
+    db_session.expire_all()
+    assert db_session.get(Document, missing.id).status == DocumentStatus.FAILED
+    assert db_session.get(Document, done.id).status == DocumentStatus.COMPLETED
+
+
+def test_purge_document_artifacts_removes_file_and_vectors(db_session, fake_qdrant):
+    document = _document(db_session)
+    path = storage.stored_file_path(document.id, document.filename)
+
+    ingestion.purge_document_artifacts(document.id, document.filename)
+
+    assert not path.exists()
+    assert fake_qdrant.deleted_documents == [document.id]

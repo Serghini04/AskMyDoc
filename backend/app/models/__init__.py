@@ -1,9 +1,12 @@
 from app.models.chat import ChatMessage, ChatSession
 from app.models.document import Chunk, Document
+from app.models.enums import DocumentStatus, MessageRole
 
 __all__ = [
-	"ChatSession",
-	"ChatMessage",
-	"Document",
-	"Chunk",
+    "ChatMessage",
+    "ChatSession",
+    "Chunk",
+    "Document",
+    "DocumentStatus",
+    "MessageRole",
 ]

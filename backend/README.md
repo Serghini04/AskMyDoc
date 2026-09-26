@@ -49,7 +49,7 @@ AskMyDoc is built for teams that handle dense, high-value documents:
 - File size validation with configurable limit.
 - Text extraction and normalization pipeline (PyMuPDF).
 - Semantic chunking with overlap for retrieval quality.
-- Local ONNX embeddings via fastembed — no API key, no GPU, works offline.
+- Multilingual API embeddings (OpenAI `text-embedding-3-small`, 1536 dims), batched with retries; model is a config change + `make reindex`.
 - Vector indexing and session-scoped filtered retrieval in Qdrant.
 - Session-based chat with persistent conversation history.
 - RAG answer generation grounded in retrieved document context.
@@ -66,7 +66,7 @@ User
   → FastAPI API Layer
       → PostgreSQL  (documents, chunks, sessions, messages)
       → Qdrant      (chunk vectors + session-filtered similarity search)
-      → LLM Service (OpenRouter · Gemma 4 26B)
+      → LLM Service (OpenAI · gpt-4.1-nano)
 ```
 
 ### 🗺️ Architecture Diagram
@@ -76,7 +76,7 @@ flowchart TD
     A[User] --> B[FastAPI API]
     B --> C[(PostgreSQL)]
     B --> D[(Qdrant)]
-    B --> E[OpenRouter\nGemma 4 26B]
+    B --> E[OpenAI\ngpt-4.1-nano]
     F[Background Ingestion] --> C
     F --> D
     G[Uploaded File] --> F
@@ -85,7 +85,7 @@ flowchart TD
 ### Retrieval Flow
 
 1. User asks a question in a session.
-2. Query is embedded via fastembed (`bge-small-en-v1.5`, 384 dims, local ONNX).
+2. Query is embedded via the embeddings API (`text-embedding-3-small`, 1536 dims).
 3. Qdrant returns the most relevant chunk IDs filtered by session.
 4. Chunk text is fetched from PostgreSQL.
 5. LLM receives: system prompt + recent history + retrieved context.
@@ -100,11 +100,11 @@ flowchart TD
 | Backend | FastAPI, SQLAlchemy, Alembic |
 | Database | PostgreSQL 16 |
 | Vector Store | Qdrant |
-| Embeddings | fastembed — `BAAI/bge-small-en-v1.5` (384 dims, local ONNX) |
-| LLM | OpenRouter — `google/gemma-4-26b-a4b-it:free` (provider-agnostic OpenAI-compatible client) |
+| Embeddings | OpenAI — `text-embedding-3-small` (1536 dims, multilingual) |
+| LLM | OpenAI — `gpt-4.1-nano` (provider-agnostic OpenAI-compatible client; OpenRouter also supported) |
 | Parsing | PyMuPDF, langchain-text-splitters |
 | Orchestration | Docker Compose (dev + prod profiles) |
-| Testing | Pytest (15 tests, router + service + end-to-end) |
+| Testing | Pytest (56 tests: routers, services, storage, ingestion, end-to-end) · Ruff lint/format |
 
 ## API Surface
 
@@ -150,8 +150,8 @@ POSTGRES_USER=rag_user
 POSTGRES_PASSWORD=rag_pass
 POSTGRES_DB=rag_db
 
-LLM_API_KEY=sk-or-v1-...      # openrouter.ai/settings/keys
-LLM_MODEL=google/gemma-4-26b-a4b-it:free
+LLM_API_KEY=sk-proj-...       # platform.openai.com/api-keys (also used for embeddings)
+LLM_MODEL=gpt-4.1-nano
 ```
 
 **2. Start in dev mode** (hot reload — no rebuild on code changes)
@@ -177,6 +177,7 @@ make dev          # Start with hot reload (bind mount)
 make prod         # Start production image (no bind mount)
 make rebuild      # Stop → rebuild image → start prod
 make migrate      # Apply Alembic migrations
+make reindex      # Re-embed all documents (after changing EMBEDDING_MODEL)
 make test         # Run test suite
 make logs         # Tail container logs
 make down         # Stop all containers
@@ -188,25 +189,41 @@ make down         # Stop all containers
 
 ```text
 app/
+  main.py            # create_app(): middleware, error handlers, routers, health checks
+  config.py          # Pydantic Settings (reads .env) — every tunable lives here
+  exceptions.py      # Domain exceptions (NotFound, Conflict, ProviderUnavailable, ...)
+  logging_config.py  # One logging format for the app
+  database.py        # SQLAlchemy engine, SessionLocal, DeclarativeBase
   api/
-    routers/      # documents.py, chat.py
-    dependencies.py
-  models/         # SQLAlchemy: Document, Chunk, ChatSession, ChatMessage
-  repositories/   # Data access: DocumentRepository, ChunkRepository, ChatRepository
-  schemas/        # Pydantic request/response schemas
-  services/
-    embeddings.py # fastembed wrapper
-    ingestion.py  # extract → clean → chunk → embed → index pipeline
-    llm.py        # OpenAICompatibleLLMService (OpenRouter by default)
-    qdrant.py     # vector upsert, search, delete
-    retrieval.py  # RAG context assembly
-  config.py       # Pydantic Settings (reads .env)
-  main.py         # FastAPI app entrypoint
-tests/            # 15 tests — router, service, end-to-end
-alembic/          # 3 migrations — initial schema, index refinement, v1 cleanup
-docker-compose.yml          # Production services
-docker-compose.override.yml # Dev overrides (hot reload, bind mount)
-Dockerfile                  # python:3.11-slim + fastembed model baked in
+    routers/         # Thin HTTP adapters: parse request -> call service -> return
+    dependencies.py  # DI wiring: DB session, services, providers
+    errors.py        # The single place domain exceptions become HTTP responses
+  services/          # Business logic — each public method is one transaction
+    chat_service.py      # sessions + the RAG `ask` use case
+    document_service.py  # upload (streamed, validated, deduplicated), delete, download
+    ingestion.py         # extract -> clean -> chunk -> embed -> index; recovery; purge
+    retrieval.py         # embed question -> Qdrant search -> chunk text from Postgres
+    embeddings.py        # OpenAI-compatible embeddings (batched, concurrent, validated)
+    llm.py               # OpenAI-compatible chat completions (retries, fallbacks)
+    qdrant.py            # vector store: typed ChunkPoint upsert / search / delete
+    storage.py           # upload files on disk (streaming, ID-based names)
+    prompts.py           # all prompt text
+  repositories/      # Data access (SQLAlchemy 2.0 select); never commit
+  models/            # ORM models + enums (DocumentStatus, MessageRole)
+  schemas/           # Pydantic request/response models (the API contract)
+  scripts/reindex.py # `make reindex` — rebuild vectors after an embedding change
+tests/               # 56 tests: routers, services, storage, ingestion, e2e, health
+alembic/             # migrations (`alembic check` must report no drift)
+pyproject.toml       # ruff (lint + format) and pytest config
+requirements.txt     # pinned runtime deps · requirements-dev.txt: + pytest, ruff
+```
+
+### Development workflow
+
+```bash
+make install   # runtime + dev deps into the venv
+make format    # auto-fix lint issues and format
+make check     # lint + tests — run before every commit
 ```
 
 ## Version Journey
@@ -216,8 +233,8 @@ Dockerfile                  # python:3.11-slim + fastembed model baked in
 ### V1 — Core MVP ✅ Complete
 
 - Document upload, ingestion, deduplication
-- fastembed local embeddings (no GPU, no API key)
-- Vector retrieval + grounded answers via OpenRouter (Gemma 4 26B)
+- API embeddings replaced local fastembed: multilingual (French top-1 16/16 vs 9/16 in our eval) and a 32% smaller image
+- Vector retrieval + grounded answers via OpenAI (gpt-4.1-nano)
 - Session-based chat with persistent history
 - Full lifecycle endpoints for documents and sessions
 - Dev/prod Docker workflow, 15 tests, Alembic migrations
@@ -242,7 +259,6 @@ Dockerfile                  # python:3.11-slim + fastembed model baked in
 - OCR for scanned documents
 - Structured parsing for forms and tables
 - Multimodal RAG for richer inputs
-- Multilingual embedding upgrade
 
 ## What This Demonstrates
 

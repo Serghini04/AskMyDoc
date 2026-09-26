@@ -7,16 +7,15 @@ VENV_DIR := .venv
 endif
 
 PYTHON := $(VENV_DIR)/bin/python
-PIP := $(VENV_DIR)/bin/pip
 UVICORN := $(VENV_DIR)/bin/uvicorn
 ALEMBIC := $(VENV_DIR)/bin/alembic
 COMPOSE := docker compose
 
-.PHONY: help check-venv install up dev prod build rebuild down restart logs ps run migrate makemigration downgrade test test-verbose
+.PHONY: help check-venv install up dev prod build rebuild down restart logs ps run migrate makemigration downgrade reindex test test-verbose lint format check
 
 help:
 	@echo "Available targets:"
-	@echo "  make install                      - Install Python dependencies"
+	@echo "  make install                      - Install runtime + dev dependencies into the venv"
 	@echo "  make dev                          - Start in dev mode (hot reload, bind mount)"
 	@echo "  make prod                         - Start in prod mode (no bind mount, no reload)"
 	@echo "  make up                           - Alias for dev"
@@ -29,15 +28,20 @@ help:
 	@echo "  make run                          - Run FastAPI app locally (uvicorn)"
 	@echo "  make test                         - Run tests (quiet)"
 	@echo "  make test-verbose                 - Run tests (verbose)"
+	@echo "  make lint                         - Lint and check formatting (ruff)"
+	@echo "  make format                       - Auto-fix lint issues and format code (ruff)"
+	@echo "  make check                        - lint + test (run before committing)"
 	@echo "  make migrate                      - Apply DB migrations (upgrade head)"
 	@echo "  make makemigration m=\"message\"    - Create auto migration"
 	@echo "  make downgrade                    - Roll back one migration"
+	@echo "  make reindex                      - Re-embed all documents (after changing EMBEDDING_MODEL)"
 
 check-venv:
 	@test -x "$(PYTHON)" || (echo "Virtualenv not found at $(VENV_DIR). Create it first." && exit 1)
 
+# `python -m pip` works even if the venv was moved (its pip shebang would be stale).
 install: check-venv
-	$(PIP) install -r requirements.txt
+	$(PYTHON) -m pip install -r requirements-dev.txt
 
 dev:
 	$(COMPOSE) up -d
@@ -72,6 +76,16 @@ test: check-venv
 test-verbose: check-venv
 	$(PYTHON) -m pytest -vv
 
+lint: check-venv
+	$(PYTHON) -m ruff check .
+	$(PYTHON) -m ruff format --check .
+
+format: check-venv
+	$(PYTHON) -m ruff check --fix .
+	$(PYTHON) -m ruff format .
+
+check: lint test
+
 # Migrations run inside the api container so DATABASE_URL's "postgres" host
 # resolves on the Docker network. The dev bind-mount means generated revision
 # files land back in alembic/versions/ on the host.
@@ -87,3 +101,7 @@ makemigration:
 
 downgrade:
 	$(COMPOSE) exec api alembic downgrade -1
+
+# Required after changing EMBEDDING_MODEL / EMBEDDING_DIMENSIONS.
+reindex:
+	$(COMPOSE) exec api python -m app.scripts.reindex

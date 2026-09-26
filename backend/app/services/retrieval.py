@@ -1,50 +1,35 @@
 from uuid import UUID
+
 from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.repositories.chunk_repo import ChunkRepository
+from app.services import qdrant
 from app.services.embeddings import BaseEmbeddingService
-from app.services.qdrant import get_qdrant_service
-from app.models.document import Chunk
+
+CONTEXT_SEPARATOR = "\n\n---\n\n"
+
 
 class RetrievalService:
-    @staticmethod
-    def get_context_for_query(
-        db: Session, 
-        session_id: UUID, 
-        query: str, 
-        embedding_service: BaseEmbeddingService,
-        limit: int = 5
-    ) -> str:
-        """
-        The 3-Step Retrieval Pipeline (Pointer Method):
-        1. Embed the text.
-        2. Search Qdrant for chunk IDs.
-        3. Fetch actual text from Postgres.
-        """
-        
-        query_vector = embedding_service.embed_text(query)
-        
-        # search Qdrant (Filtered by session_id)
-        qdrant = get_qdrant_service()
-        search_results = qdrant.search_similar_chunks(
-            query_vector=query_vector,
-            session_id=str(session_id),
-            limit=limit
+    """
+    Retrieval with the pointer method:
+    1. embed the question, 2. search Qdrant for chunk IDs (scoped to the session),
+    3. fetch the chunk text from Postgres, preserving Qdrant's ranking.
+    """
+
+    def __init__(self, db: Session, embeddings: BaseEmbeddingService):
+        self.chunks = ChunkRepository(db)
+        self.embeddings = embeddings
+
+    def retrieve_context(self, session_id: UUID, query: str) -> str:
+        """The most relevant chunks joined into one context string ("" if none)."""
+        query_vector = self.embeddings.embed_text(query)
+        chunk_ids = qdrant.get_qdrant_service().search_chunk_ids(
+            query_vector, session_id, limit=settings.RETRIEVAL_TOP_K
         )
-        
-        if not search_results:
+        if not chunk_ids:
             return ""
 
-        chunk_ids = [result.id for result in search_results]
-        
-        chunks = db.query(Chunk).filter(Chunk.id.in_(chunk_ids)).all()
-        
-        chunk_map = {str(chunk.id): chunk.content for chunk in chunks}
-        
-        ordered_context = []
-        for result in search_results:
-            content = chunk_map.get(str(result.id))
-            if content:
-                ordered_context.append(content)
-
-        final_context_string = "\n\n---\n\n".join(ordered_context)
-        
-        return final_context_string
+        contents = self.chunks.contents_by_id(chunk_ids)
+        # A vector whose chunk row is gone (e.g. mid-deletion) is skipped.
+        return CONTEXT_SEPARATOR.join(contents[cid] for cid in chunk_ids if cid in contents)

@@ -12,9 +12,7 @@ def _service_returning(*responses):
     service._extra_body = None
     calls = iter(responses)
     service.client = SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(create=lambda **_kw: next(calls))
-        )
+        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_kw: next(calls)))
     )
     return service
 

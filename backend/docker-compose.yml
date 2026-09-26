@@ -1,3 +1,7 @@
+# Explicit project name: otherwise Compose uses the folder name ("backend"),
+# which collides with other projects' containers, volumes, and networks.
+name: askmydoc
+
 services:
   api:
     build: .

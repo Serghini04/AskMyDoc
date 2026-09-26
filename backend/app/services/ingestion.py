@@ -1,171 +1,156 @@
-from __future__ import annotations
+"""
+Document ingestion: extract -> clean -> chunk -> embed -> store (Postgres + Qdrant).
 
-import os
-import re
+Runs outside the request (FastAPI BackgroundTasks), so every entry point here
+owns its own DB session. Indexing is idempotent, which makes startup recovery
+and `make reindex` safe to run at any time.
+"""
+
 import logging
+import re
+from pathlib import Path
 from uuid import UUID
 
 import pymupdf
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import SessionLocal
-from app.models.document import Chunk, Document
+from app.models.document import Document
+from app.models.enums import IN_PROGRESS_STATUSES, DocumentStatus
 from app.repositories.chunk_repo import ChunkRepository
 from app.repositories.document_repo import DocumentRepository
+from app.services import qdrant, storage
 from app.services.embeddings import BaseEmbeddingService, get_embedding_service
-from app.services.qdrant import get_qdrant_service
+
+logger = logging.getLogger(__name__)
 
 
-UPLOAD_DIR = "uploads"
-IN_PROGRESS_STATUSES = ("PENDING", "PROCESSING")
+# --- text processing ---------------------------------------------------------
 
 
-def stored_file_path(doc_id: UUID | str, filename: str) -> str:
-    """Where an upload lives on disk: uploads/<doc_id><ext>."""
-    _, ext = os.path.splitext(filename)
-    return os.path.join(UPLOAD_DIR, f"{doc_id}{ext.lower()}")
-
-
-def extract_text(file_path: str, ext: str) -> str:
-    raw_text = ""
-    if ext == ".pdf":
-        doc = pymupdf.open(file_path)
-        for page_num in range(len(doc)):
-            raw_text += doc.load_page(page_num).get_text()
-        doc.close()
-    elif ext == ".txt":
-        with open(file_path, "r", encoding="utf-8") as f:
-            raw_text = f.read()
-    else:
-        raise ValueError(f"Unsupported extension for extraction: {ext}")
-    return raw_text
+def extract_text(path: Path) -> str:
+    extension = path.suffix.lower()
+    if extension == ".pdf":
+        with pymupdf.open(path) as pdf:
+            return "".join(page.get_text() for page in pdf)
+    if extension == ".txt":
+        return path.read_text(encoding="utf-8")
+    raise ValueError(f"Unsupported extension for extraction: {extension}")
 
 
 def clean_text(text: str) -> str:
-    text = re.sub(r"(\w+)-\n(\w+)", r"\1\2", text)
+    text = re.sub(r"(\w+)-\n(\w+)", r"\1\2", text)  # re-join hyphenated line breaks
     text = re.sub(r"\n+", " ", text)
     text = re.sub(r"\s{2,}", " ", text)
     return text.strip()
 
 
-def chunk_document_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> list[str]:
+def split_into_chunks(text: str) -> list[str]:
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
+        chunk_size=settings.CHUNK_SIZE_CHARS,
+        chunk_overlap=settings.CHUNK_OVERLAP_CHARS,
         length_function=len,
         separators=["\n\n", "\n", " ", ""],
     )
     return splitter.split_text(text)
 
 
-def process_document(
-    db: Session,
-    doc_id: UUID | str,
-    file_path: str,
-    ext: str,
-    embedding_service: BaseEmbeddingService,
-) -> int:
-    doc = db.query(Document).filter(Document.id == doc_id).first()
-    if not doc:
-        raise ValueError(f"Document {doc_id} not found in database.")
+# --- indexing ----------------------------------------------------------------
 
-    raw_text = extract_text(file_path, ext)
-    clean_str = clean_text(raw_text)
-    chunks = chunk_document_text(clean_str, chunk_size=1000, chunk_overlap=200)
 
-    # Idempotent: a retry (e.g. after a crash mid-ingestion) replaces any
-    # partial output instead of duplicating it.
-    get_qdrant_service().delete_points_by_document(str(doc_id))
-    db.query(Chunk).filter(Chunk.document_id == doc_id).delete(synchronize_session=False)
-    db.commit()
+def index_document(db: Session, document: Document, embeddings: BaseEmbeddingService) -> int:
+    """
+    (Re)build a document's chunks and vectors. Idempotent: previous output is
+    replaced, never duplicated. Leaves the transaction for the caller to commit.
+    Returns the number of chunks.
+    """
+    path = storage.stored_file_path(document.id, document.filename)
+    texts = split_into_chunks(clean_text(extract_text(path)))
 
-    saved_chunks = ChunkRepository.create_bulk(db=db, document_id=doc_id, chunks_data=chunks)
+    # Embed first: it's the slow, network-bound step, so if the provider
+    # fails nothing has been written yet.
+    vectors = embeddings.embed_texts(texts)
 
-    qdrant_payloads = []
-    for chunk in saved_chunks:
-        vector = embedding_service.embed_text(chunk.content)
-        qdrant_payloads.append({
-            "id": str(chunk.id),
-            "vector": vector,
-            "payload": {
-                "document_id": str(doc_id),
-                "session_id": str(doc.session_id),
-                "chunk_index": chunk.chunk_index,
-            },
-        })
+    vector_store = qdrant.get_qdrant_service()
+    vector_store.delete_document(document.id)
+    chunks_repo = ChunkRepository(db)
+    chunks_repo.delete_for_document(document.id)
+    chunks = chunks_repo.add_all(document.id, texts)
 
-    get_qdrant_service().upsert_points(qdrant_payloads)
+    vector_store.upsert_chunks(
+        [
+            qdrant.ChunkPoint(
+                chunk_id=chunk.id,
+                document_id=document.id,
+                session_id=document.session_id,
+                chunk_index=chunk.chunk_index,
+                vector=vector,
+            )
+            for chunk, vector in zip(chunks, vectors, strict=True)
+        ]
+    )
     return len(chunks)
 
 
-def process_document_background(
-    doc_id: UUID | str,
-    file_path: str,
-    ext: str,
-    embedding_service: BaseEmbeddingService | None = None,
-):
-    """Wrapper for FastAPI BackgroundTasks — owns its own DB session."""
+def ingest_document(document_id: UUID, embeddings: BaseEmbeddingService | None = None) -> None:
+    """Background-task entry point: index one document and record the outcome."""
     with SessionLocal() as db:
-        try:
-            if embedding_service is None:
-                embedding_service = get_embedding_service()
+        documents = DocumentRepository(db)
+        document = documents.get(document_id)
+        if document is None:
+            logger.warning("Document %s was deleted before ingestion started", document_id)
+            return
 
-            logging.info("Starting background processing for document %s", doc_id)
-            DocumentRepository.update_status(db, doc_id, "PROCESSING")
-            chunks_created = process_document(db, doc_id, file_path, ext, embedding_service)
-            DocumentRepository.update_status(db, doc_id, "COMPLETED")
-            logging.info("Processed %d chunks for document %s", chunks_created, doc_id)
-        except Exception as e:
-            logging.error("Failed to process document %s: %s", doc_id, e)
-            DocumentRepository.update_status(db, doc_id, "FAILED")
+        document.status = DocumentStatus.PROCESSING
+        db.commit()
+        logger.info("Ingesting document %s", document_id)
+
+        try:
+            chunk_count = index_document(db, document, embeddings or get_embedding_service())
+            document.status = DocumentStatus.COMPLETED
+            db.commit()
+            logger.info("Indexed %d chunks for document %s", chunk_count, document_id)
+        except Exception:
+            logger.exception("Failed to ingest document %s", document_id)
+            db.rollback()
+            document.status = DocumentStatus.FAILED
+            db.commit()
 
 
 def resume_unfinished_documents() -> None:
     """
     Re-run ingestion for documents left PENDING/PROCESSING by a previous process.
 
-    BackgroundTasks live in the API process, so a restart or deploy mid-upload
-    kills the job and would leave the document stuck forever. Called once at
-    startup; safe because process_document is idempotent.
+    BackgroundTasks live in the API process, so a restart mid-upload kills the
+    job and would leave the document stuck forever. Called once at startup.
     """
     with SessionLocal() as db:
-        stuck = (
-            db.query(Document.id, Document.filename)
-            .filter(Document.status.in_(IN_PROGRESS_STATUSES))
-            .all()
-        )
+        to_resume: list[UUID] = []
+        for document in DocumentRepository(db).list_with_status(IN_PROGRESS_STATUSES):
+            if storage.stored_file_path(document.id, document.filename).exists():
+                to_resume.append(document.id)
+            else:
+                logger.error("Cannot resume document %s: its file is missing", document.id)
+                document.status = DocumentStatus.FAILED
+        db.commit()
 
-    if not stuck:
-        return
-    logging.info("Resuming %d unfinished document(s).", len(stuck))
-
-    for doc_id, filename in stuck:
-        file_path = stored_file_path(doc_id, filename)
-        if not os.path.exists(file_path):
-            logging.error("Cannot resume document %s: file %s is missing.", doc_id, file_path)
-            with SessionLocal() as db:
-                DocumentRepository.update_status(db, doc_id, "FAILED")
-            continue
-        _, ext = os.path.splitext(filename)
-        process_document_background(doc_id, file_path, ext.lower())
+    if to_resume:
+        logger.info("Resuming %d unfinished document(s)", len(to_resume))
+    for document_id in to_resume:
+        ingest_document(document_id)
 
 
-def purge_document_artifacts(doc_id: UUID | str, filename: str) -> None:
+def purge_document_artifacts(document_id: UUID, filename: str) -> None:
     """
     Best-effort removal of a document's file and vectors. Call after the DB
     delete has committed: leftovers are harmless (retrieval only returns chunks
-    that still exist in Postgres), whereas the reverse order could leave a DB
-    row pointing at a file that's already gone.
+    that still exist in Postgres), whereas the reverse order could leave a row
+    pointing at a file that's already gone.
     """
-    file_path = stored_file_path(doc_id, filename)
+    storage.discard(storage.stored_file_path(document_id, filename))
     try:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-    except OSError as exc:
-        logging.warning("Failed to delete file %s: %s", file_path, exc)
-
-    try:
-        get_qdrant_service().delete_points_by_document(str(doc_id))
-    except Exception as exc:
-        logging.warning("Failed to delete Qdrant vectors for document_id=%s: %s", doc_id, exc)
+        qdrant.get_qdrant_service().delete_document(document_id)
+    except Exception:
+        logger.warning("Failed to delete vectors for document %s", document_id, exc_info=True)

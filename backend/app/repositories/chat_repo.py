@@ -1,51 +1,52 @@
 from uuid import UUID
-from typing import List
+
+from sqlalchemy import select
 from sqlalchemy.orm import Session
-from app.models.chat import ChatSession, ChatMessage
+
+from app.models.chat import ChatMessage, ChatSession
+
 
 class ChatSessionRepository:
-    
-    @staticmethod
-    def create(db: Session, title: str = "New Chat") -> ChatSession:
-        new_session = ChatSession(title=title)
-        db.add(new_session)
-        db.commit()
-        db.refresh(new_session)
-        return new_session
+    """Data access for chat sessions. Never commits — the caller owns the transaction."""
 
-    @staticmethod
-    def get_all(db: Session, skip: int = 0, limit: int = 50) -> List[ChatSession]:
-        return db.query(ChatSession).order_by(ChatSession.created_at.desc()).offset(skip).limit(limit).all()
+    def __init__(self, db: Session):
+        self.db = db
 
-    @staticmethod
-    def get_by_id(db: Session, session_id: UUID) -> ChatSession:
-        return db.query(ChatSession).filter(ChatSession.id == session_id).first()
+    def add(self, chat_session: ChatSession) -> ChatSession:
+        self.db.add(chat_session)
+        self.db.flush()
+        return chat_session
 
-    @staticmethod
-    def update_title(db: Session, session: ChatSession, title: str) -> ChatSession:
-        session.title = title
-        db.commit()
-        db.refresh(session)
-        return session
-    
-class ChatMessageRepository:
-    
-    @staticmethod
-    def create(db: Session, session_id: UUID, role: str, content: str) -> ChatMessage:
-        new_message = ChatMessage(
-            session_id=session_id,
-            role=role,
-            content=content
+    def get(self, session_id: UUID) -> ChatSession | None:
+        return self.db.get(ChatSession, session_id)
+
+    def list_page(self, *, offset: int, limit: int) -> list[ChatSession]:
+        stmt = (
+            select(ChatSession).order_by(ChatSession.created_at.desc()).offset(offset).limit(limit)
         )
-        db.add(new_message)
-        db.commit()
-        db.refresh(new_message)
-        return new_message
-    
-    @staticmethod
-    def get_recent_by_session(db: Session, session_id: UUID, limit: int = 5) -> List[ChatMessage]:
-        """Fetches the most recent messages for LLM context, ordered chronologically."""
-        messages = db.query(ChatMessage).filter(
-            ChatMessage.session_id == session_id
-        ).order_by(ChatMessage.created_at.desc()).limit(limit).all()
-        return messages[::-1]
+        return list(self.db.scalars(stmt))
+
+    def delete(self, chat_session: ChatSession) -> None:
+        self.db.delete(chat_session)
+
+
+class ChatMessageRepository:
+    """Data access for chat messages. Never commits — the caller owns the transaction."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add(self, message: ChatMessage) -> ChatMessage:
+        self.db.add(message)
+        self.db.flush()
+        return message
+
+    def recent(self, session_id: UUID, limit: int) -> list[ChatMessage]:
+        """The last `limit` messages of a session, oldest first."""
+        stmt = (
+            select(ChatMessage)
+            .where(ChatMessage.session_id == session_id)
+            .order_by(ChatMessage.created_at.desc())
+            .limit(limit)
+        )
+        return list(reversed(self.db.scalars(stmt).all()))

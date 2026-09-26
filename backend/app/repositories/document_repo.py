@@ -1,59 +1,44 @@
-import uuid
+from collections.abc import Iterable
+from uuid import UUID
 
-from sqlalchemy import UUID
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.chat import ChatSession
 from app.models.document import Document
+from app.models.enums import DocumentStatus
+
 
 class DocumentRepository:
-    
-    @staticmethod
-    def create(
-        db: Session,
-        filename: str,
-        file_hash: str,
-        file_size_bytes: int,
-        session_id: uuid.UUID | None = None,
-    ) -> Document:
-        """Inserts a new document record into the DB."""
-        if session_id is None:
-            raise ValueError("session_id is required")
+    """Data access for documents. Never commits — the caller owns the transaction."""
 
-        session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
-        if session is None:
-            raise ValueError("session_id does not exist")
+    def __init__(self, db: Session):
+        self.db = db
 
-        db_doc = Document(
-            filename=filename,
-            file_hash=file_hash,
-            file_size_bytes=file_size_bytes,
-            session_id=session_id,
+    def add(self, document: Document) -> Document:
+        self.db.add(document)
+        self.db.flush()
+        return document
+
+    def get(self, document_id: UUID) -> Document | None:
+        return self.db.get(Document, document_id)
+
+    def list_page(self, *, offset: int, limit: int) -> list[Document]:
+        stmt = select(Document).order_by(Document.created_at.desc()).offset(offset).limit(limit)
+        return list(self.db.scalars(stmt))
+
+    def find_in_session_by_hash(self, session_id: UUID, file_hash: str) -> Document | None:
+        stmt = select(Document).where(
+            Document.session_id == session_id, Document.file_hash == file_hash
         )
-        db.add(db_doc)
-        db.commit()
-        db.refresh(db_doc)
-        return db_doc
-        
-    @staticmethod
-    def get_by_hash_and_session(
-        db: Session,
-        file_hash: str,
-        session_id: uuid.UUID,
-    ) -> Document | None:
-        """Checks if a file already exists in the same session to prevent duplicates."""
-        return (
-            db.query(Document)
-            .filter(Document.file_hash == file_hash, Document.session_id == session_id)
-            .first()
-        )
-    
-    @staticmethod
-    def update_status(db: Session, doc_id: UUID, status: str) -> Document | None:
-        """Updates the state machine (e.g, 'pending' -> 'processing' -> 'indexes')"""
-        db_doc = db.query(Document).filter(Document.id == doc_id).first()
-        if db_doc:
-            db_doc.status = status
-            db.commit()
-            db.refresh(db_doc)
-        return db_doc
+        return self.db.scalars(stmt).first()
+
+    def list_with_status(self, statuses: Iterable[DocumentStatus]) -> list[Document]:
+        stmt = select(Document).where(Document.status.in_(list(statuses)))
+        return list(self.db.scalars(stmt))
+
+    def set_all_statuses(self, status: DocumentStatus) -> None:
+        for document in self.db.scalars(select(Document)):
+            document.status = status
+
+    def delete(self, document: Document) -> None:
+        self.db.delete(document)
